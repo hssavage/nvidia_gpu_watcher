@@ -1,0 +1,262 @@
+#!/usr/bin/env python3
+
+###############################################################################
+# gpu_watcher                                                                 #
+# -----------                                                                 #
+# A simple utility to scrape the NVIDIA store front and check for in stock    #
+# graphics cards. Has terminal output and MacOS only notifications            #
+###############################################################################
+
+# pip3 install selenium
+from selenium import webdriver
+
+# Default HTML parser
+from lxml import html
+
+# To sleep while we setup
+from time import sleep
+
+# For update time string
+import datetime
+
+# For notifications on MacOS
+from os import system
+
+# For path resolving
+from os.path import abspath, expanduser
+
+###############################################################################
+# Desktop Notifications                                                       #
+###############################################################################
+
+def notify(title, text):
+    '''
+    Print an ugly looking notification to the MacOS screen
+    https://stackoverflow.com/questions/17651017/python-post-osx-notification
+    '''
+    system("""
+           osascript -e 'display notification "{}" with title "{}"'
+           """.format(text, title))
+
+###############################################################################
+# Terminal Formatters                                                         #
+###############################################################################
+
+# Gotta love ascii control characters
+
+def red(msg):
+    '''
+    Format text as red
+    '''
+    return "\033[0;31m" + msg + "\033[0m"
+
+def green(msg):
+    '''
+    Format text as green
+    '''
+    return "\033[0;32m" + msg + "\033[0m"
+
+def set_text_frame(msg):
+    '''
+    Clear the screen and replace it with the given message text
+    '''
+    s = "\033[?25l" + "\033[1J" + "\033[1;1H" + msg + "\033[?25h"
+    print(s)
+
+###############################################################################
+# Renderer Exception                                                          #
+###############################################################################
+
+class RendererException(Exception):
+    pass
+
+###############################################################################
+# Renderer Object                                                             #
+###############################################################################
+
+class Renderer(object):
+    '''
+    An object that can render a given web url and return the final HTML as a
+    string
+
+    https://medium.com/@hoppy/how-to-test-or-scrape-javascript-rendered-websites-with-python-selenium-a-beginner-step-by-c137892216aa
+    https://medium.com/@stevennatera/web-scraping-with-selenium-and-chrome-canary-on-macos-fc2eff723f9e
+    http://stanford.edu/~mgorkove/cgi-bin/rpython_tutorials/Scraping_a_Webpage_Rendered_by_Javascript_Using_Python.php
+    '''
+
+    STARTUP_WAIT_PERIOD = 3
+
+    def __init__(self, driver="chrome", driver_path=None, visible=False):
+        '''
+        Initialize the object
+            driver - <string> Set which driver to use. I currently only have
+                     chrome supported because its what I use
+            driver_path - <string>
+        '''
+
+        # Set up the rendering driver
+        self.visible = visible
+        self.__driver = None
+        self.driver_type = None
+        if(driver.lower() == "chrome"):
+            self.driver_type = "chrome"
+            options = webdriver.ChromeOptions()
+            options.add_argument('window-size=800x600')
+            if(not self.visible):
+                options.add_argument('headless')
+            if(driver_path is None):
+                self.__driver = webdriver.Chrome(chrome_options=options)
+            else:
+                driver_path = abspath(expanduser(driver_path))
+                self.__driver = webdriver.Chrome(driver_path, chrome_options=options)
+            sleep(self.STARTUP_WAIT_PERIOD)
+        else:
+            raise RendererException("Driver type '" + str(self.driver_type) + "' is not supported")
+
+    def close(self):
+        '''
+        Properly clean up the Renderer object
+        '''
+        self.__driver.quit()
+
+    #-------------------------------------------------------------------------#
+    # Get a page's rendered HTML                                              #
+    #-------------------------------------------------------------------------#
+
+    def get_page(self, url=""):
+        '''
+        '''
+        if(url is None or url == ""):
+            return ""
+        try:
+            self.__driver.get(url)
+        except Exception as e:
+            return ""
+        return self.__driver.page_source
+
+    #-------------------------------------------------------------------------#
+    # 'With' Statement Setup                                                  #
+    #-------------------------------------------------------------------------#
+
+    def __enter__(self):
+        '''
+        '''
+        return self
+
+    def __exit__(self ,type, value, traceback):
+        '''
+        '''
+        self.close()
+
+    #-------------------------------------------------------------------------#
+    # 'str' and 'print' Statement Setup                                       #
+    #-------------------------------------------------------------------------#
+
+    def __str__(self):
+        return "<Renderer Object -- Type: " + str(self.d) + ">"
+
+    def __repr__(self):
+        '''
+        '''
+        return self.__str__()
+
+###############################################################################
+# NVIDIA GPU Object                                                           #
+###############################################################################
+
+ITEM_TABLE = {
+    5094274700 : "Nvidia Titan Xp  ",
+    5094274900 : "Nvidia GTX 1080TI",
+    2740204200 : "Nvidia GTX 1080  ",
+    5136449000 : "Nvidia GTX 1070TI",
+    2740281000 : "Nvidia GTX 1070  ",
+    5056171200 : "Nvidia GTX 1060  ",
+}
+
+class NvidiaGpuProduct(object):
+    '''
+    Represent an Nvidia GPU product
+    '''
+
+    def __init__(self, obj_html):
+        '''
+        '''
+
+        # Defaults
+        self.id = -1
+        self.name = ""
+        self.price = 0
+        self.in_stock = False
+
+        # Parse HTML into information
+        self.__parse_item(obj_html)
+
+    def __parse_item(self, obj_html):
+        '''
+        '''
+
+        # ID
+        self.id = int(obj_html.attrib["data-digital-river-id"])
+
+        # Name
+        if(self.id in ITEM_TABLE):
+            self.name = ITEM_TABLE[self.id]
+
+        # Price
+        price_dollars = obj_html.xpath(".//div[contains(@class, 'price')]/text()")[0][2:-1].replace(",", "")
+        price_cents = obj_html.xpath(".//div[contains(@class, 'price')]/sup/text()")[0]
+        self.price = float(price_dollars) + (float(price_cents) / 100.0)
+
+        # In stock
+        available = True
+        try:
+            available = (obj_html.xpath(".//a/div/text()")[0] != "Notify Me")
+        except Exception as e:
+            pass
+        self.in_stock = available
+
+    def __str__(self):
+        return "<NVIDIA GPU -- Name: " + str(self.name) + " -- Price: " + str(self.price) + " -- Available: " + (green("YES!") if self.in_stock else red("No")) + ">"
+
+    def __repr__(self):
+        '''
+        '''
+        return self.__str__()
+
+###############################################################################
+# Main                                                                        #
+###############################################################################
+
+def crawl():
+    url = "https://www.nvidia.com/en-us/geforce/products/10series/geforce-store/"
+    gpu_status = {}
+    with Renderer(driver_path="/usr/local/bin/chromedriver") as r:
+        while(True):
+
+            # Render the page
+            rendered_content = r.get_page(url=url)
+            page_dom = html.fromstring(rendered_content)
+            products = page_dom.xpath(".//div[contains(@class, 'product-row__item')]")
+
+            # Extract the products
+            yes = False
+            s = "Last Updated: " + datetime.datetime.now().strftime("%Y/%m/%d %H:%M:%S") + "\n"
+            for p in products:
+                gpu = NvidiaGpuProduct(p)
+                s += str(gpu) + "\n"
+                yes = (gpu.in_stock or yes)
+
+            # Desktop notifications
+            if(yes):
+                notify("GPU Available", "A GPU is available at the NVIDIA store: " + url)
+
+            # CLI output
+            set_text_frame(s[:-1])
+
+            sleep(20)
+
+if __name__ == '__main__':
+    try:
+        crawl()
+    except KeyboardInterrupt as e:
+        pass
